@@ -1,4 +1,6 @@
-FROM ubuntu:latest
+FROM nvidia/cuda:10.1-base-ubuntu18.04
+
+ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
 
 ENV TZ=Europe/Minsk
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone

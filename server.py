@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -14,16 +15,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(url.query)
         stream = Stream(params['file'][0], 'rtmp://a.rtmp.youtube.com/live2/', params['key'][0], params['loop'][0])
 
-        response = json.dumps(
-            {
-                'success': True,
-                'message': 'stream has been run',
-                'file': params['file'][0],
-                'key': params['key'][0],
-                'loop': params['loop'][0]
-            }
-        )
-        self.wfile.write(response.encode())
+        if not os.path.exists(params['file'][0]):
+            return {'success': False,'message': 'file '+params['file'][0]+' not found'}
+
 
         delay = 0
         if "delay" in params:
@@ -31,7 +25,10 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=self.delay_run, args=(stream, delay)).start()
 
-        return True
+        return  {
+            'success': True,
+            'message': 'stream has been run',
+        }
 
     def delay_run(self, stream,delay):
 
@@ -46,32 +43,23 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(url.query)
         stream = Stream(params['file'][0], 'rtmp://a.rtmp.youtube.com/live2/', params['key'][0], params['loop'][0])
         stream.stop(params['key'][0])
-        response = json.dumps(
-            {
-                'success': True,
-                'message': 'stream has been stop',
-                'file': params['file'][0],
-                'key': params['key'][0],
-                'loop': params['loop'][0]
-            }
-        )
-        self.wfile.write(response.encode())
+
+        return {
+            'success': True,
+            'message': 'stream has been stop',
+        }
+
+
 
     def restart(self):
         url = urlparse(self.path)
         params = parse_qs(url.query)
         stream = Stream(params['file'][0], 'rtmp://a.rtmp.youtube.com/live2/', params['key'][0], params['loop'][0])
         stream.restart(params['key'][0])
-        response = json.dumps(
-            {
-                'success': True,
-                'message': 'stream has been restart',
-                'file': params['file'][0],
-                'key': params['key'][0],
-                'loop': params['loop'][0]
-            }
-        )
-        self.wfile.write(response.encode())
+        return {
+            'success': True,
+            'message': 'stream has been restart',
+        }
 
     def stream(self):
         url = urlparse(self.path)
@@ -91,8 +79,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             '/restart': self.restart,
             '/stream': self.stream,
         }
-        func = switcher.get(argument, lambda: "Invalid month")
-        (func())
+        func = switcher.get(argument, lambda: {'error': 'some error'})
+        response = json.dumps(func())
+        self.wfile.write(response.encode())
 
     def do_GET(self):
         self.send_response(200)
@@ -104,4 +93,10 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
 
 httpd = HTTPServer(('0.0.0.0', 8002), SimpleHTTPRequestHandler)
-httpd.serve_forever()
+
+try:
+    httpd.serve_forever()
+except KeyboardInterrupt:
+    pass
+finally:
+    httpd.server_close()

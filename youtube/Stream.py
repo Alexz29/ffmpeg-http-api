@@ -5,7 +5,6 @@ import re
 import datetime
 import os
 
-
 from tinydb import TinyDB, Query, where
 
 
@@ -84,10 +83,18 @@ class Stream:
         tbl.remove((where('status') == self.STATUS_INACTIVE) & (where('key') == self.key))
         process = (
             ffmpeg
-                .input(self.input_file, re=None, report=None, loglevel='40', stream_loop=self.loop, ss=timecode)
+                .input(self.input_file,
+                    re=None,
+                    hwaccel='cuvid',
+                    c:v='h264_cuvid'
+                    report=None,
+                    loglevel='40',
+                    stream_loop=self.loop,
+                    ss=timecode
+                )
                 .output(
                     self.output + self.key,
-                    vcodec='libx264',
+                    vcodec='h264_nvenc',
                     # pix_fmt='yuv420p',
                     # maxrate='2M',
                     # bufsize='2M',

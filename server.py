@@ -30,8 +30,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             'message': 'stream has been run',
         }
 
-    def delay_run(self, stream,delay):
-
+    def delay_run(self, stream, delay):
         if delay!= None:
             print ("delay run stream :"+ str(delay)+ "s")
             time.sleep(int(delay))
@@ -61,6 +60,12 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             'message': 'stream has been restart',
         }
 
+    def streams(self):
+        stream = Stream(None, None, None, None)
+        response = json.dumps(stream.get_streams())
+
+        self.wfile.write(response.encode())
+
     def stream(self):
         url = urlparse(self.path)
         params = parse_qs(url.query)
@@ -72,12 +77,12 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(response.encode())
 
     def route(self, argument):
-        print('route')
         switcher = {
             '/start': self.start,
             '/stop': self.stop,
             '/restart': self.restart,
             '/stream': self.stream,
+            '/streams': self.streams,
         }
         func = switcher.get(argument, lambda: {'error': 'some error'})
         response = json.dumps(func())

@@ -4,35 +4,18 @@ import time
 import re
 import datetime
 import os
+import psutil
 
 from tinydb import TinyDB, Query, where
 
 
 class Stream:
-    """
-    Приветствю Вас в нарнии о мой господин!
-    Если ты видишь эти строки, беги отсюда, как можно быстрее!
-    Данный быдлокод очень помогает стримить видео потоки на сраный ютубчик
-
-    вот один из скотских примеров использования чудесной поделки:
-
-    Начать отправку потока:
-        stream = Stream('./1.mp4', 'rtmp://a.rtmp.youtube.com/live2/', '04a6-scmz-btz5-8rda', 0)
-        stream.run()
-
-    Перезапустить поток:
-        stream = Stream('./1.mp4', 'rtmp://a.rtmp.youtube.com/live2/', '04a6-scmz-btz5-8rda', 0)
-        print(stream.restart('04a6-scmz-btz5-8rda'))
-
-    Остановить поток:
-        stream = Stream('./1.mp4', 'rtmp://a.rtmp.youtube.com/live2/', '04a6-scmz-btz5-8rda', 0)
-        print(stream.stop('04a6-scmz-btz5-8rda'))
-
-    """
     STATUS_ACTIVE = 'active'
     STATUS_INACTIVE = 'inactive'
     TBL_NAME = 'process'
     DB_FILE_PATH = './db/db.json'
+
+    sleep = 5
 
     def __init__(self, input_file, output, key, loop):
         self.input_file = input_file
@@ -42,90 +25,102 @@ class Stream:
         self.db = TinyDB(self.DB_FILE_PATH)
 
     def run(self, ):
-        """
-        Главная функция для запуска стрима
-
-        :return: string PID тдентификатор процесса
-        """
         is_active, stream_info = self.is_active_stream(self.key)
-        if not is_active:
-            process = self.start_stream()
-            threading.Thread(target=self.stream_listener, args=(process,)).start()
-            return process.pid
-        return stream_info['pid']
+        if is_active and psutil.pid_exists(stream_info['pid']):
+            return True
 
-    def stream_listener(self, process):
-        """
-        Функция для отслеживания активности прецесса конвертации.
-        Когда процесс закончился, в базе происходит изменение статуса на STATUS_INACTIVE.
-        Шаг дискоретизации 5 секунд
-
-        :param process: object Запущенный процесс
-        :return:
-        """
-        pid = process.pid
-        while True:
-            strm = self.get_stream_by_key(self.key)
-            if process.poll() is not None:
-                tbl = self.db.table(self.TBL_NAME)
-                tbl.update({'status': self.STATUS_INACTIVE, 'to_start':'00:00:00' }, where('pid') == pid)
-                os.remove(strm[0]['log'])
-                break
-            time.sleep(5)
-
-    def start_stream(self, timecode='00:00:00'):
-        """
-        Функция самого запуска стрима
-
-        :return:
-        """
-        tbl = self.db.table(self.TBL_NAME)
-        tbl.remove((where('status') == self.STATUS_INACTIVE) & (where('key') == self.key))
-        process = (
-            ffmpeg
-                .input(self.input_file,
-                    re=None,
-                    hwaccel='cuvid',
-                    c:v='h264_cuvid'
-                    report=None,
-                    loglevel='40',
-                    stream_loop=self.loop,
-                    ss=timecode
-                )
-                .output(
-                    self.output + self.key,
-                    vcodec='h264_nvenc',
-                    # pix_fmt='yuv420p',
-                    # maxrate='2M',
-                    # bufsize='2M',
-                    r='30',
-                    b="2500k",  # bitrate 2500 kbit/s youtube recommendation
-                    # segment_time='1',
-                    format='flv'
-                )
-                .run_async(quiet=False)
-        )
+        process = self.start_stream(self.input_file, self.output + self.key, self.loop)
         now = datetime.datetime.now()
         date_time = now.strftime("%Y%m%d-%H%M%S")
         log_file = 'ffmpeg-' + date_time + '.log'
-        # делаем запись в базе
-        tbl.insert({
-            'key': self.key,
-            'pid': process.pid,
-            'status': self.STATUS_ACTIVE,
-            'log': log_file,
-            'to_start': timecode
+        timecode = self.current_timecode(log_file)
+        db = self.db.table(self.TBL_NAME)
+        db.remove((where('key') == self.key))
+        db.insert({
+            'key': self.key, 'pid': process.pid, 'status': self.STATUS_ACTIVE, 'log': log_file, 'to_start': timecode
         })
+        threading.Thread(target=self.stream_listener, args=(process, log_file)).start()
+        return True
+
+    @staticmethod
+    def start_stream(input_file, output, loop, timecode='00:00:00'):
+        process = (
+            ffmpeg.input(
+                input_file,
+                re=None,
+                # hwaccel='cuvid',
+                # vcodec='h264_cuvid',
+                report=None,
+                loglevel='40',
+                stream_loop=loop,
+                ss=timecode
+            ).output(
+                output,
+                # vcodec='h264_nvenc',
+                r='30',
+                b="2500k",
+                format='flv'
+            ).run_async(quiet=False)
+        )
+
         return process
 
-    def is_active_stream(self, key):
-        """
-        Функция для проверки активности процесса.
-        Если процесс активено то она возвращает запись данного проуесса из бд
+    @staticmethod
+    def current_timecode(log_file):
+        timecode = '00:00:00'
 
-        :param key: string ключ трансляции
-        :return:
-        """
+        if os.path.isfile(log_file):
+            file = open(log_file, 'r')
+            text = file.read()
+            file.close()
+            matches = re.findall(r"time=\w+.\w+.\w+.\w+", text)
+            timecode = matches[-1][5:13]
+
+        return timecode
+
+    @staticmethod
+    def is_crush(log_file):
+        error_messages = [
+            '',
+            'xyzzzzzzzz'
+        ]
+        if os.path.isfile(log_file):
+            file = open(log_file, 'r')
+            text = file.read()
+            file.close()
+            for val in error_messages:
+                error = re.search(val, text)
+                if error:
+                    return True
+                return False
+        return False
+
+    def stream_listener(self, process, log_file):
+
+        while True:
+            time.sleep(self.sleep)
+
+            print(process.pid)
+            if process.poll() is not None:
+                if self.is_crush(log_file):
+                    os.remove(log_file)
+                    timecode = self.current_timecode(log_file)
+                    process = self.start_stream(self.input_file, self.output + self.key, self.loop, timecode)
+                    tbl = self.db.table(self.TBL_NAME)
+                    now = datetime.datetime.now()
+                    date_time = now.strftime("%Y%m%d-%H%M%S")
+                    log_file = 'ffmpeg-' + date_time + '.log'
+                    tbl.update(
+                        {'status': self.STATUS_ACTIVE, 'to_start': timecode, 'pid': process.pid, 'log': log_file},
+                        where('key') == self.key
+                    )
+                else:
+                    tbl = self.db.table(self.TBL_NAME)
+                    tbl.remove((Query().pid == process.pid))
+                    os.remove(log_file)
+                    break
+
+    def is_active_stream(self, key):
         process = Query()
         tbl = self.db.table(self.TBL_NAME)
         result = tbl.search((process.key == key) & (process.status == self.STATUS_ACTIVE))
@@ -134,24 +129,17 @@ class Stream:
 
         return True, result[0]
 
-    def get_stream_by_key(self, key):
-        """
-        Функция возвращает из бд запись с процессом
+    def get_streams(self):
+        process = Query()
+        tbl = self.db.table(self.TBL_NAME)
+        return tbl.all()
 
-        :param key: string ключ трансляции
-        :return: array
-        """
+    def get_stream_by_key(self, key):
         process = Query()
         tbl = self.db.table(self.TBL_NAME)
         return tbl.search((process.key == key))
 
     def get_now_time_code(self, key):
-        """
-        Функция возвращает таймкод на котором остановился процесс
-
-        :param key: string ключ трансляции
-        :return: string
-        """
         strm = self.get_stream_by_key(key)
         textfile = open(strm[0]['log'], 'r')
         filetext = textfile.read()
@@ -160,27 +148,19 @@ class Stream:
         return matches[-1][5:13]
 
     def stop(self, key):
-        """
-        Функция останавливает стрим
-
-        :param key: string ключ трансляции
-        :return:
-        """
         strm = self.get_stream_by_key(key)
-        os.system("kill -s KILL " + str(strm[0]['pid']))
+        stream = strm[0]
+
+        os.system("kill -s KILL " + str(stream['pid']))
+        timecode = self.current_timecode(stream['log_file'])
+
         tbl = self.db.table(self.TBL_NAME)
-        timecode = self.get_now_time_code(key)
-        tbl.update({'status': self.STATUS_INACTIVE, 'to_start': timecode }, where('key') == self.key)
+
+        tbl.update({'status': self.STATUS_INACTIVE, 'to_start': timecode}, where('key') == self.key)
 
         return True
 
     def restart(self, key):
-        """
-        Перезапуск активного потока
-
-        :param key:
-        :return:
-        """
         is_active, stream_info = self.is_active_stream(key)
         if not is_active:
             return False, "Stream is not active"
@@ -195,8 +175,7 @@ class Stream:
             d = datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
             sum += d
         new_timecode = str(sum)
-        process = self.start_stream(new_timecode)
+        process = start_stream(new_timecode)
         threading.Thread(target=self.stream_listener, args=(process,)).start()
 
         return True, "Stream has been restart"
-

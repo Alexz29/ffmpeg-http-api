@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 
 
 
-RUN pip3 install ffmpeg-python tinydb
+RUN pip3 install ffmpeg-python tinydb psutil
 
 RUN python3.7 --version
 

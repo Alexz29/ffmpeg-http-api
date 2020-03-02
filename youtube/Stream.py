@@ -48,7 +48,7 @@ class Stream:
             ffmpeg.input(
                 input_file,
                 re=None,
-                # hwaccel='cuvid',
+                hwaccel='cuvid',
                 # vcodec='h264_cuvid',
                 report=None,
                 loglevel='40',
@@ -56,7 +56,7 @@ class Stream:
                 ss=timecode
             ).output(
                 output,
-                # vcodec='h264_nvenc',
+                vcodec='h264_nvenc',
                 r='30',
                 b="2500k",
                 format='flv'
@@ -81,8 +81,7 @@ class Stream:
     @staticmethod
     def is_crush(log_file):
         error_messages = [
-            '',
-            'xyzzzzzzzz'
+            'libcuda.so.1'
         ]
         if os.path.isfile(log_file):
             file = open(log_file, 'r')
@@ -150,13 +149,11 @@ class Stream:
     def stop(self, key):
         strm = self.get_stream_by_key(key)
         stream = strm[0]
-
         os.system("kill -s KILL " + str(stream['pid']))
-        timecode = self.current_timecode(stream['log_file'])
 
-        tbl = self.db.table(self.TBL_NAME)
-
-        tbl.update({'status': self.STATUS_INACTIVE, 'to_start': timecode}, where('key') == self.key)
+        # timecode = self.current_timecode(stream['log'])
+        # tbl = self.db.table(self.TBL_NAME)
+        # tbl.update({'status': self.STATUS_INACTIVE, 'to_start': timecode}, where('key') == self.key)
 
         return True
 

@@ -1,3 +1,18 @@
+# Deploy to production
+
+```
+docker build .
+
+docker images
+
+//tag to gpu versin
+docker tag {hash}  alexz291/ffmpeg-rest-api:gpu
+
+docker push alexz291/ffmpeg-rest-api:gpu
+```
+
+
+
 #FFmpeg HTTP API for youtube
 
 

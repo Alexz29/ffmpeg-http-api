@@ -35,7 +35,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
             print ("delay run stream :"+ str(delay)+ "s")
             time.sleep(int(delay))
 
-        stream.run()
+        stream.run
 
     def stop(self):
         url = urlparse(self.path)

@@ -1,14 +1,11 @@
 import threading
 import ffmpeg
-import uuid
 import time
 import re
-import datetime
 import os
-import logging
 import psutil
 
-from tinydb import TinyDB, Query, where
+import sqlite3
 
 
 class Stream:
@@ -16,8 +13,8 @@ class Stream:
     STATUS_INACTIVE = 'inactive'
     STATUS_MANUAL_STOPPED = 'manual_stopped'
     STATUS_SUCCESS_STOPPED = 'success_stopped'
-    TBL_NAME = 'process'
-    DB_FILE_PATH = './db/db.json'
+    TBL_NAME = 'streams'
+    DB_FILE_PATH = './db/db.sqlite'
 
     sleep = 5
 
@@ -26,77 +23,82 @@ class Stream:
         self.output = output
         self.key = key
         self.loop = loop
-        self.db = TinyDB(self.DB_FILE_PATH)
 
-    def run(self, ):
-        is_active, stream_info = self.is_active_stream(self.key)
-        if is_active and psutil.pid_exists(stream_info['pid']):
+        self.conn = sqlite3.connect(self.DB_FILE_PATH)
+        self.c = self.conn.cursor()
+
+    def db(self, sql, params, fetch_type=None):
+        conn = sqlite3.connect(self.DB_FILE_PATH)
+        c = conn.cursor()
+        c.execute(sql, params)
+        conn.commit()
+
+        if fetch_type is None:
             return True
 
-        print("Stream id" + self.key + " has been started")
-        process, log_file = self.start_stream(self.input_file, self.output + self.key, self.loop)
+        func = getattr(c, fetch_type)
 
+        return func()
+
+    @property
+    def run(self, ):
+        is_active, stream_info = self.is_active_stream(self.key)
+
+        if is_active and psutil.pid_exists(stream_info[2]):
+            print("=============================================")
+            print('STREAM ALREADY EXIST')
+            print("=============================================")
+            return True
+
+        process, log_file = self.start_stream(self.input_file, self.output, self.key, self.loop)
         timecode = self.current_timecode(log_file)
 
-        db = self.db.table(self.TBL_NAME)
-        db.remove((where('key') == self.key))
-        db.insert({
-            'key': self.key, 'pid': process.pid, 'status': self.STATUS_ACTIVE, 'log': log_file, 'to_start': timecode
-        })
+        sql = "DELETE FROM streams where key = ?"
+        self.db(sql, (self.key,))
+
+        sql = "INSERT INTO streams(key, pid, status, log, to_start) VALUES (?, ?, ?, ?, ?)"
+        self.db(sql, (self.key, process.pid, self.STATUS_ACTIVE, log_file, timecode,))
+
         threading.Thread(target=self.stream_listener, args=(process, log_file)).start()
+
         return True
 
     @staticmethod
-    def start_stream(input_file, output, loop, timecode='00:00:00'):
+    def start_stream(input_file, output, key, loop, timecode='00:00:00'):
         process = (
             ffmpeg.input(
                 input_file,
                 re=None,
                 hwaccel='cuvid',
                 # vcodec='h264_cuvid',
-                # report=None,
+                report=None,
                 loglevel='40',
                 stream_loop=loop,
                 ss=timecode,
             ).output(
-                output,
+                output + key,
                 vcodec='h264_nvenc',
                 r='30',
                 b="2500k",
                 format='flv'
-            ).run_async(quiet=True, pipe_stdout=True, pipe_stderr=True)
+            ).run_async(quiet=False)
         )
-
-        log_file = uuid.uuid4().hex + ".log"
-
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-
-        # create a file handler
-        handler = logging.FileHandler(log_file)
-        handler.setLevel(logging.INFO)
-        logger.addHandler(handler)
-
-        out, err = process.communicate()
-
-        logger.info(err.decode())
-        logger.info(out.decode())
+        time.sleep(5)
+        _string = os.popen('grep -rn -i "live2/' + key + '" . -m 1').read()
+        log_file = _string[2:28]
 
         return process, log_file
 
     @staticmethod
     def current_timecode(log_file):
         timecode = '00:00:00'
-
         if os.path.isfile(log_file):
             file = open(log_file, 'r')
             text = file.read()
             file.close()
             matches = re.findall(r"time=\w+.\w+.\w+.\w+", text)
-
             if matches:
                 timecode = matches[-1][5:13]
-
         return timecode
 
     @staticmethod
@@ -118,102 +120,74 @@ class Stream:
         return False
 
     def stream_listener(self, process, log_file):
-
         while True:
             time.sleep(self.sleep)
             if process.poll() is not None:
-                strm = self.get_stream_by_key(self.key)
-                stream = strm[0]
-
-                if self.is_crush(log_file) and stream['status'] != self.STATUS_MANUAL_STOPPED:
-
+                stream = self.db("SELECT * FROM streams WHERE key=? ", (self.key,), 'fetchone')
+                if self.is_crush(log_file) and stream[3] != self.STATUS_MANUAL_STOPPED:
                     print("=============================================")
-                    print('завершился не корректно')
+                    print('INCORRECT STOPPED')
                     print("log file: " + log_file)
                     timecode = self.current_timecode(log_file)
-
                     print("TIMECODE:" + timecode)
                     os.remove(log_file)
-
-                    print('Запускаем')
-                    process, log_file = self.start_stream(self.input_file, self.output + self.key, self.loop, timecode)
-                    tbl = self.db.table(self.TBL_NAME)
-
-                    tbl.update(
-                        {'status': self.STATUS_ACTIVE, 'to_start': timecode, 'pid': process.pid, 'log': log_file},
-                        where('key') == self.key
-                    )
+                    print('TRY TO START')
+                    process, log_file = self.start_stream(self.input_file, self.output, self.key, self.loop, timecode)
+                    sql = "UPDATE streams SET status = ?, to_start = ?, pid = ?, log = ?  WHERE key=? "
+                    self.db(sql, (self.STATUS_ACTIVE, timecode, process.pid, log_file, self.key,))
                     print("=============================================")
                 else:
                     print("=============================================")
-                    print('завершился корректно')
-                    tbl = self.db.table(self.TBL_NAME)
-                    tbl.update(
-                        {'status': self.STATUS_SUCCESS_STOPPED},
-                        where('key') == self.key
-                    )
-                    # time.sleep(30)
-                    tbl.remove((Query().pid == process.pid))
-                    os.remove(log_file)
+                    print('CORRECT STOPPED')
+                    sql = "DELETE FROM streams where pid = ?"
+                    self.db(sql, (process.pid,))
+
+                    if os.path.isfile(log_file):
+                        os.remove(log_file)
+
                     print("=============================================")
                     break
 
     def is_active_stream(self, key):
-        process = Query()
-        tbl = self.db.table(self.TBL_NAME)
-        result = tbl.search((process.key == key) & (process.status == self.STATUS_ACTIVE))
-        if not result:
+
+        sql = "SELECT * FROM streams WHERE key = ? AND status = ? LIMIT 1"
+        stream = self.db(sql, (key, self.STATUS_ACTIVE), 'fetchone')
+
+        if not stream:
             return False, None
 
-        return True, result[0]
+        return True, stream
 
     def get_streams(self):
-        process = Query()
-        tbl = self.db.table(self.TBL_NAME)
-        return tbl.all()
-
-    def get_stream_by_key(self, key):
-        process = Query()
-        tbl = self.db.table(self.TBL_NAME)
-        return tbl.search((process.key == key))
-
-    def get_now_time_code(self, key):
-        strm = self.get_stream_by_key(key)
-        textfile = open(strm[0]['log'], 'r')
-        filetext = textfile.read()
-        textfile.close()
-        matches = re.findall(r"time=\w+.\w+.\w+.\w+", filetext)
-        return matches[-1][5:13]
+        return self.db("SELECT * FROM streams", (), 'fetchall')
 
     def stop(self, key):
-        strm = self.get_stream_by_key(key)
-        if strm:
-            stream = strm[0]
-
-            os.system("kill -s KILL " + str(stream['pid']))
-
-            timecode = self.current_timecode(stream['log'])
-            tbl = self.db.table(self.TBL_NAME)
-            tbl.update({'status': self.STATUS_MANUAL_STOPPED, 'to_start': timecode}, where('key') == self.key)
+        stream = self.db("SELECT * FROM streams WHERE key=? ", (key,), 'fetchone')
+        if stream:
+            os.system("kill -s KILL " + str(stream[2]))
+            timecode = self.current_timecode(stream[4])
+            self.db("UPDATE streams SET status = ?, to_start = ? WHERE key=? ", (
+                self.STATUS_MANUAL_STOPPED, timecode, self.key,
+            ))
 
         return True
 
-    def restart(self, key):
-        is_active, stream_info = self.is_active_stream(key)
-        if not is_active:
-            return False, "Stream is not active"
-        timecode = self.get_now_time_code(key)
-        self.stop(key)
-
-        timeList = [stream_info['to_start'], timecode]
-
-        sum = datetime.timedelta()
-        for i in timeList:
-            (h, m, s) = i.split(':')
-            d = datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
-            sum += d
-        new_timecode = str(sum)
-        process = start_stream(new_timecode)
-        threading.Thread(target=self.stream_listener, args=(process,)).start()
-
-        return True, "Stream has been restart"
+    # def restart(self, key):
+    #     is_active, stream_info = self.is_active_stream(key)
+    #     if not is_active:
+    #         return False, "Stream is not active"
+    #     timecode = self.get_now_time_code(key)
+    #     self.stop(key)
+    #
+    #     timeList = [stream_info['to_start'], timecode]
+    #
+    #     sum = datetime.timedelta()
+    #     for i in timeList:
+    #         (h, m, s) = i.split(':')
+    #         d = datetime.timedelta(hours=int(h), minutes=int(m), seconds=int(s))
+    #         sum += d
+    #     new_timecode = str(sum)
+    #     process = start_stream(new_timecode)
+    #     threading.Thread(target=self.stream_listener, args=(process,)).start()
+    #
+    #     return True, "Stream has been restart"
